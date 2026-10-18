@@ -6,3 +6,9 @@ __pycache__/
 # WorkBuddy local workspace data (contains credentials / memory / automation config)
 .workbuddy/
 signin.log
+
+# Checkin logs (contain local paths)
+checkin.log
+
+# Local secrets — never commit
+.env
