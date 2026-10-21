@@ -58,8 +58,16 @@ def log(msg: str) -> None:
 
 
 def decrypt_auth(b64_text: str) -> dict:
-    """解密 iCubeAuthInfo 加密串，返回含 token / userRegion 的 dict"""
-    t = base64.b64decode(b64_text)
+    """解密 iCubeAuthInfo 加密串，返回含 token / userRegion 的 dict
+
+    兼容两种存储格式：
+    - 新版客户端：明文 JSON（直接以 { 开头），无需解密
+    - 旧版客户端：base64 加密信封，按原算法解密
+    """
+    text = b64_text.strip()
+    if text.startswith("{"):
+        return json.loads(text)
+    t = base64.b64decode(text)
     key = t[HDR_LEN:HDR_LEN + KEY_LEN]
     sha = hashlib.sha512(key).digest()
     xor = bytes(a ^ b for a, b in zip(URE, DRE))
@@ -158,7 +166,14 @@ def api(url: str, token: str, region: str, device_id: str) -> dict:
     }
     if region:
         headers["X-User-Region"] = region
-    r = requests.post(url, headers=headers, json={"req_source": REQ_SOURCE}, timeout=30)
+    try:
+        r = requests.post(url, headers=headers, json={"req_source": REQ_SOURCE}, timeout=30)
+    except requests.exceptions.ProxyError:
+        # 本机代理瞬时不可用时直连重试一次（国内域名一般无需代理）
+        r = requests.post(
+            url, headers=headers, json={"req_source": REQ_SOURCE}, timeout=30,
+            proxies={"http": None, "https": None},
+        )
     r.raise_for_status()
     return r.json()
 

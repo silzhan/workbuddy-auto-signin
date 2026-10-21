@@ -183,9 +183,20 @@ def request_json(
     """统一请求 + 错误分类：auth_failed / network / schema_changed / api_error。"""
     url = API + path
     try:
-        resp = session.request(
-            method, url, json=payload, headers=extra_headers, timeout=TIMEOUT
-        )
+        try:
+            resp = session.request(
+                method, url, json=payload, headers=extra_headers, timeout=TIMEOUT
+            )
+        except requests.exceptions.ProxyError:
+            # 本机代理瞬时不可用时直连重试一次（国内域名一般无需代理）
+            resp = session.request(
+                method,
+                url,
+                json=payload,
+                headers=extra_headers,
+                timeout=TIMEOUT,
+                proxies={"http": None, "https": None},
+            )
     except requests.RequestException as exc:
         raise QoderError(
             "network",
