@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""一次签三个：Qoder CN / Trae CN / WorkBuddy 统一入口。
+"""一次签三个入口：Qoder（国际版 + CN）/ Trae CN / WorkBuddy。
 
 依次调用同目录下的三个签到脚本（子进程隔离，互不影响），最后汇总：
-  1. qoder_checkin.py          Qoder CN 每日签到（需环境变量 QODERCN_PAT）
+  1. qoder_checkin.py          Qoder 国际版 / Qoder CN 每日签到
+                               （需环境变量 QODER_PAT / QODERCN_PAT，可只配其中一个）
   2. trae_checkin.py           Trae CN / TRAE SOLO CN 签到（读本机客户端登录态）
   3. signin.py auto            WorkBuddy 签到 + 成长中心（读本机客户端登录态）
 
@@ -20,10 +21,11 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 TIMEOUT_SECONDS = 900  # WorkBuddy 内部预算 420s，这里只兜底防卡死
+QODER_ENV_VARS = ("QODER_PAT", "QODERCN_PAT")
 
 # (显示名, 脚本文件, 额外参数)
 TASKS = [
-    ("Qoder CN", "qoder_checkin.py", []),
+    ("Qoder / Qoder CN", "qoder_checkin.py", []),
     ("Trae CN", "trae_checkin.py", []),
     ("WorkBuddy", "signin.py", ["auto"]),
 ]
@@ -40,12 +42,12 @@ def _reconfigure_stdout():
 
 
 def _ensure_qoder_pat():
-    """QODERCN_PAT 缺失时回退读注册表用户环境变量。
+    """QODER_PAT / QODERCN_PAT 缺失时回退读注册表用户环境变量。
 
     解决「保存到用户环境变量后，先启动的常驻 shell 读不到新值」的问题；
     非 Windows 平台或读取失败则跳过，交给 qoder_checkin.py 自己报错。
     """
-    if os.environ.get("QODERCN_PAT"):
+    if all(os.environ.get(name) for name in QODER_ENV_VARS):
         return
     if sys.platform != "win32":
         return
@@ -53,9 +55,15 @@ def _ensure_qoder_pat():
         import winreg
 
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            value, _ = winreg.QueryValueEx(key, "QODERCN_PAT")
-        if value:
-            os.environ["QODERCN_PAT"] = value
+            for name in QODER_ENV_VARS:
+                if os.environ.get(name):
+                    continue
+                try:
+                    value, _ = winreg.QueryValueEx(key, name)
+                except OSError:
+                    continue
+                if value:
+                    os.environ[name] = value
     except OSError:
         pass
 

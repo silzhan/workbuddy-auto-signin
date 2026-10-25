@@ -1,15 +1,24 @@
-# Qoder CN 每日签到脚本（qoder_checkin.py）使用指南
+# Qoder / Qoder CN 每日签到脚本（qoder_checkin.py）使用指南
 
 > [!NOTE]
-> 本文档对应的脚本是 [`qoder_checkin.py`](../qoder_checkin.py)（原名 `checkin.py`），与仓库的 `signin.py`（WorkBuddy 签到）、`trae_checkin.py`（Trae CN 签到）**相互独立**，鉴权方式、目标站点、部署方式都不同，不要混用。
+> 本文档对应的脚本是 [`qoder_checkin.py`](../qoder_checkin.py)（原名 `checkin.py`），同时支持 **Qoder 国际版**和 **Qoder CN** 两套账号，与仓库的 `signin.py`（WorkBuddy 签到）、`trae_checkin.py`（Trae CN 签到）**相互独立**，鉴权方式、目标站点、部署方式都不同，不要混用。
 
 ## 一、这是什么
 
-一个自动领取 **Qoder CN 每日签到 100 Credits** 的 Python 脚本，主打青龙面板部署，也支持本地直接运行。
+一个自动领取 **Qoder 国际版 / Qoder CN 每日签到 100 Credits** 的 Python 脚本，主打青龙面板部署，也支持本地直接运行。
+
+两套产品账号相互独立，脚本用两个环境变量分别配置，**可只配其中一个，也可同时配**：
+
+| 站点 | 接口域名 | 环境变量 | PAT 创建地址 |
+|---|---|---|---|
+| Qoder 国际版 | `https://openapi.qoder.sh` | `QODER_PAT` | <https://qoder.com/account/integrations> |
+| Qoder CN | `https://openapi.qoder.com.cn` | `QODERCN_PAT` | <https://qoder.cn/account/integrations> |
+
+除接口域名外，两边的路径和鉴权链路相同。**国际版多一道设备风控**：业务接口要求携带 `Cosy-MachineToken / Cosy-MachineCode / Cosy-MachineType`，这三枚头由本机 Qoder 客户端自带的 `resources/umid/runtime-info` 现场生成。缺了它们，国际版活动接口仍返回 `200`，但**每日 100 Credits 的条目会被静默隐藏**，看起来像「活动不存在」。CN 不校验设备头。
 
 **活动规则**（实测结论，改动前先读脚本头部注释）：
 
-- 每天 **10:00（UTC+8）** 开新一轮窗口，持续到**次日 10:00** 前
+- 两个站点均为每天 **10:00（UTC+8）** 开新一轮窗口，持续到**次日 10:00** 前
 - 每轮限领一次 100 Credits，自领取起 30 天有效，**错过不补**
 
 **为什么走 PAT 而不是读客户端本地凭证**：
@@ -19,10 +28,10 @@
 | 读客户端本地凭证（网上常见做法） | ① DPAPI 绑定 Windows 用户，青龙容器里用不了；② refreshToken（`drt-`）一次一换，静态环境变量写不回去，脚本一刷新客户端就掉登录 |
 | **本脚本：PAT 换 jobToken** | PAT 是官方给 CLI/CI 无头环境用的，每次运行现换一个 24h 的 `jt-`，用完即弃、不落盘，不碰 DPAPI、不影响客户端登录 |
 
-鉴权链路：
+鉴权链路（两边一致）：
 
 ```
-QODERCN_PAT (pt-…，永久)
+PAT (pt-…，永久)
   --POST /api/v1/jobToken/exchange-->
 jobToken (jt-…，24h)  --Authorization: Bearer-->  业务接口
 ```
@@ -35,15 +44,28 @@ jobToken (jt-…，24h)  --Authorization: Bearer-->  业务接口
    pip install requests
    ```
 
-2. **创建 PAT**：打开 <https://qoder.cn/account/integrations> → 新建个人访问令牌（`pt-` 开头）→ **建完立刻复制，页面关了不再显示**
+2. **创建 PAT**（按你实际使用的站点选一个或两个都建）：
+   - **Qoder 国际版**：<https://qoder.com/account/integrations> → 新建个人访问令牌（`pt-` 开头）
+   - **Qoder CN**：<https://qoder.cn/account/integrations> → 新建个人访问令牌（`pt-` 开头）
+
+   > ⚠️ 令牌**建完立刻复制**，页面关了不再显示。
+
+3. **国际版额外要求：本机 Qoder 客户端**
+   - 脚本会自动查找 `Qoder` / `Qoder CN` 安装目录下的
+     `resources/umid/runtime-info.exe`（Windows）并执行，取设备身份三头；
+   - 找不到时可用环境变量 `QODER_UMID_PATH` 指定组件完整路径；
+   - 青龙等 Linux 容器里默认**没有**这个组件，需要在容器内放一份可执行的
+     Linux 版 runtime-info 并指定路径，否则国际版拿不到每日活动（CN 不受影响）；
+   - 服务端按设备身份限流：**同一台设备每天只允许一个国际版账号领取**，多账号会从第二个起失败。
 
 ### 令牌怎么安全存放
 
-脚本**只读环境变量** `QODERCN_PAT`（`os.getenv`），不读取任何文件，这是有意设计。
+令牌**只从环境变量读取**（`QODER_PAT` / `QODERCN_PAT`），不读任何令牌文件，这是有意设计（设备身份组件 runtime-info 除外）。
 
 - **Windows 推荐**：用户级环境变量，不进 git、新终端直接生效：
 
   ```powershell
+  [Environment]::SetEnvironmentVariable("QODER_PAT", "pt-账号1&pt-账号2", "User")
   [Environment]::SetEnvironmentVariable("QODERCN_PAT", "pt-账号1&pt-账号2", "User")
   ```
 
@@ -55,9 +77,13 @@ jobToken (jt-…，24h)  --Authorization: Bearer-->  业务接口
 | 步骤 | 操作 |
 |---|---|
 | ① 放脚本 | 把 `qoder_checkin.py` 上传到青龙的 `scripts` 目录 |
-| ② 加环境变量 | 名称 `QODERCN_PAT`，值 `pt-xxxxxxxx`；多账号用 `&` 或换行分隔：`pt-账号1&pt-账号2` |
+| ② 加环境变量 | 国际版：名称 `QODER_PAT`；CN：名称 `QODERCN_PAT`。值填 `pt-xxxxxxxx`，只配你有的那个即可 |
 | ③ 建定时任务 | 调度表达式填 `5 10 * * *`（每天 10:05） |
 | ④ 装依赖 | 订阅管理里加 `requests`，或进容器 `pip install requests` |
+
+> 青龙里跑 **Qoder CN** 没有任何额外要求；跑 **Qoder 国际版**还要把
+> `runtime-info` 组件放进容器（`chmod +x` 后把路径写进 `QODER_UMID_PATH`），
+> 否则活动列表只剩推广、每日 100 会被隐藏。
 
 **为什么是 10:05**（别乱改）：
 
@@ -69,36 +95,42 @@ jobToken (jt-…，24h)  --Authorization: Bearer-->  业务接口
 
 ```powershell
 # Windows PowerShell
-$env:QODERCN_PAT = "pt-你的令牌"
+$env:QODER_PAT = "pt-国际版令牌"
+$env:QODERCN_PAT = "pt-CN令牌"   # 可只设其中一个
 python qoder_checkin.py
 ```
 
 ```bash
 # macOS / Linux
-export QODERCN_PAT="pt-你的令牌"
+export QODER_PAT="pt-国际版令牌"
+export QODERCN_PAT="pt-CN令牌"   # 可只设其中一个
 python3 qoder_checkin.py
 ```
 
 ### 多账号
 
-环境变量的值用 `&` 或换行分隔多个 PAT：
+两个环境变量的值都支持用 `&` 或换行分隔多个 PAT：
 
 ```
-QODERCN_PAT=pt-账号1&pt-账号2&pt-账号3
+QODER_PAT=pt-账号1&pt-账号2
+QODERCN_PAT=pt-账号3&pt-账号4
 ```
 
 - 脚本内部按 `&` 和换行切分、去空白、**去重**（重复的 PAT 只跑一次）
 - **单账号失败不影响其余账号**——每个账号独立隔离，一个 PAT 失效其余照常签
-- 日志以 `账号N(脱敏PAT)` 标识每个账号
+- 日志以 `站点 账号N(脱敏PAT)` 标识每个账号
+- 只配了其中一个站点时，另一个站点会记一条「未配置，跳过」，不算失败
 
 ## 五、输出怎么读
 
 ```
-[qoder] 开始签到：共 1 个账号
-[qoder] 账号1(pt-xxxx***wxyz) jobToken 交换成功（有效期 24h）
-[qoder] 账号1(pt-xxxx***wxyz) 活动列表：共 N 条，可领 1 条
-[qoder] 账号1(pt-xxxx***wxyz) ✅ 签到成功 +100 CREDITS
-[qoder] 账号1(pt-xxxx***wxyz) 余额：userQuota ...（套餐额度）；addOnQuota ...（资源包，签到发放进这里）
+[qoder] 开始签到：共 2 个站点 / 2 个账号
+[qoder] 设备身份已加载（…\Qoder\resources\umid\runtime-info.exe）
+[qoder] Qoder 账号1(pt-xxxx***wxyz) jobToken 交换成功（有效期 24h）
+[qoder] Qoder 账号1(pt-xxxx***wxyz) 活动列表：共 N 条，可领 1 条
+[qoder] Qoder 账号1(pt-xxxx***wxyz) ✅ 签到成功 +100 CREDITS
+[qoder] Qoder 账号1(pt-xxxx***wxyz) 余额：userQuota ...（套餐额度）；addOnQuota ...（资源包，签到发放进这里）
+[qoder] Qoder CN 账号1(pt-xxxx***wxyz) ✅ 今天已签到（无需操作）
 ```
 
 | 输出 | 含义 |
@@ -107,7 +139,8 @@ QODERCN_PAT=pt-账号1&pt-账号2&pt-账号3
 | `✅ 签到成功 +N（replayed，权益不重复发放）` | 重复领取，接口幂等返回，不算失败 |
 | `✅ 今天已签到（无需操作）` | 已领过，正常 |
 | `⚠️ 当前没有进行中的签到活动` | 活动可能已下线 |
-| `❌ Qoder PAT 已失效` | 重新登录创建 PAT 并更新环境变量 |
+| `❌ 无法确认签到状态：未找到 … runtime-info` | 国际版缺设备身份组件，见「二、准备工作」第 3 条 |
+| `❌ Qoder PAT 已失效` / `❌ Qoder CN PAT 已失效` | 重新登录对应站点创建 PAT 并更新环境变量 |
 
 - 签到的 100 Credits 落在 **addOnQuota（资源包）**，不在 userQuota（套餐额度），查余额时看对地方
 - **退出码**：全部账号成功为 0，任一失败为 1，青龙可据此触发告警
@@ -118,28 +151,35 @@ QODERCN_PAT=pt-账号1&pt-账号2&pt-账号3
 
 - ⚠️ PAT 等同账号权限，泄露即等于账号泄露，别提交进 git、别外传
 - ⚠️ 脚本只存 PAT、每次现换 jobToken，不会挤掉你电脑上 Qoder 客户端的登录
+- ⚠️ 国际版与 CN 是两套独立账号，PAT 不能混用；`QODER_PAT` 只对 `openapi.qoder.sh` 有效，`QODERCN_PAT` 只对 `openapi.qoder.com.cn` 有效
 - 常见报错排查：
-  - `网络请求失败` → 本机/容器连不上 `openapi.qoder.com.cn`
-  - `接口返回异常状态 4xx` → 检查 PAT 是否有效、活动是否还在
+  - `网络请求失败` → 本机/容器连不上对应的 `openapi.qoder.sh` / `openapi.qoder.com.cn`
+  - `接口返回异常状态 4xx` → 检查对应站点的 PAT 是否有效、活动是否还在
   - `接口结构未识别（schema_changed）` → Qoder 侧接口有变动，对照脚本头部的接口清单核对
 
-## 七、接口清单（全部本机实测）
+## 七、接口清单（两个域名路径一致，全部本机实测）
 
 | 接口 | 说明 |
 |---|---|
 | `POST /api/v1/jobToken/exchange` | PAT 换 jobToken（`Cosy-ClientType: 5`，注意与业务接口不同） |
-| `GET /sash/api/v1/me/campaigns` | 活动列表（`Cosy-ClientType: 10`，漏了会静默返回空数组） |
+| `GET /sash/api/v1/me/campaigns` | 活动列表（`Cosy-ClientType: 10`，漏了会静默返回空数组；国际版还要求设备身份三头，否则每日活动被隐藏） |
 | `POST /sash/api/v1/me/campaigns/{campaignId}/claim` | 领取（body `{}`，幂等，重复领返回 replayed） |
 | `GET /sash/api/v2/me/usage` | 余额（userQuota / addOnQuota） |
 
+- 国际版域名：`https://openapi.qoder.sh`
+- CN 域名：`https://openapi.qoder.com.cn`
+
 领取必须用 `campaignId`（UUID），不是 `campaignKey`（`act-YYYYMMDD-NNN`）。
+
+**设备身份头**（仅国际版校验，CN 带上也无害）：`Cosy-MachineToken` / `Cosy-MachineCode` / `Cosy-MachineType`，取自 `runtime-info` 输出的 `machineToken` / `machineCode` / `machineType`。
 
 **领取判定**：只领 `actionType == CLAIM_BENEFIT` **且** `claimStatus == CLAIMABLE` **且** `campaignId` 非空的条目——只按其中一个条件判会误领 VIEW_DETAILS / ACHIEVEMENT_NOT_COMPLETED，两类实测都存在，两个条件必须同时满足。
 
 ## 八、安全说明与免责声明
 
 - 脚本**绝不回显完整 PAT / jobToken**，日志只显示前 6 位 + 尾 4 位，可安全外发
+- 设备身份只打印组件路径，不打印 `machineToken / machineCode / machineType` 的值
 - 错误文案不回显服务端响应体，避免凭证类信息进入日志/通知
 - PAT 只在内存中用于 exchange 请求，不写临时文件、不落盘缓存
 - 单账号异常隔离不中断其余账号，请求超时 20 秒
-- 本脚本为**非官方**工具，与腾讯 / Qoder 无隶属关系。接口系逆向官方客户端所得，可能随时变动且不另行通知，使用风险自负，请遵守相关服务条款
+- 本脚本为**非官方**工具，与腾讯 / 阿里云（Qoder）无隶属关系。接口系逆向官方客户端所得，可能随时变动且不另行通知，使用风险自负，请遵守相关服务条款

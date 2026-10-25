@@ -2,19 +2,29 @@
 
 """
 cron: 5 10 * * *
-new Env('Qoder CN 每日签到');
+new Env('Qoder / Qoder CN 每日签到');
 
-Qoder CN「每天领 100 Credits」自动签到（青龙面板 / Python3）。
+Qoder 国际版 / Qoder CN「每天领 100 Credits」自动签到（青龙面板 / Python3）。
 
-环境变量：
-  QODERCN_PAT  必填。Qoder CN 个人访问令牌（PAT，pt- 开头）。
+环境变量（两套账号相互独立，可只配其中一个）：
+  QODER_PAT    可选。Qoder 国际版个人访问令牌（PAT，pt- 开头）。
+               到 https://qoder.com/account/integrations 创建后填入。
+  QODERCN_PAT  可选。Qoder CN 个人访问令牌（PAT，pt- 开头）。
                到 https://qoder.cn/account/integrations 创建后填入。
-               多账号用 & 或换行分隔，例如：QODERCN_PAT=pt-账号1&pt-账号2
-  （命名与 Qoder 官方 CLI 的 QODERCN_PERSONAL_ACCESS_TOKEN 对齐）
+               两个变量都支持多账号，用 & 或换行分隔，例如：
+               QODER_PAT=pt-账号1&pt-账号2
+  （命名与 Qoder 官方 CLI 的 QODER_PERSONAL_ACCESS_TOKEN /
+    QODERCN_PERSONAL_ACCESS_TOKEN 对齐）
+  QODER_UMID_PATH  可选。设备身份组件 runtime-info 的完整路径，一般不用配：
+               脚本会自动在 Qoder / Qoder CN 安装目录的 resources/umid 下查找。
+
+站点与接口域名（路径与鉴权链路相同，国际版额外要求设备身份头）：
+  Qoder 国际版  https://openapi.qoder.sh
+  Qoder CN      https://openapi.qoder.com.cn
 
 调度说明（cron: 5 10 * * *，每一项都有理由，改动前先读）：
-  活动窗口为「每日 10:00 (UTC+8) 开放新一轮，持续至次日 10:00 前」，每轮限领一次
-  100 Credits、自领取起 30 天有效、错过不补。
+  两个站点活动窗口一致：每日 10:00 (UTC+8) 开放新一轮，持续至次日 10:00 前；
+  每轮限领一次 100 Credits、自领取起 30 天有效、错过不补。
   定在 10:05 而不是 10:00：给上游切窗口留 5 分钟缓冲，避免正好卡在切换瞬间、
   拿到上一轮的已领状态；同时离窗口开始最近，当天 10:05 失败到次日 10:00 前
   还有接近 24 小时的重试余量。
@@ -22,8 +32,8 @@ Qoder CN「每天领 100 Credits」自动签到（青龙面板 / Python3）。
      那一轮，失败后的重试余量会被压缩（极端情况下不足 2 小时）。漏领不补。
   ⚠️ 不要改成一天跑两次以上：同一窗口内多跑没有额外收益，只会多打接口。
 
-鉴权链路（实测 2026-10-18，Qoder CN 0.4.8 / openapi.qoder.com.cn）：
-  QODERCN_PAT (pt-…, 永久)
+鉴权链路（两边一致，实测 2026-10-18 Qoder CN 0.4.8 / openapi.qoder.com.cn）：
+  PAT (pt-…, 永久)
     --POST /api/v1/jobToken/exchange  {"personal_token": "<PAT>"}-->
   jobToken (jt-…, 24h)  --Authorization: Bearer-->  业务接口
 
@@ -33,10 +43,14 @@ Qoder CN「每天领 100 Credits」自动签到（青龙面板 / Python3）。
        exchange      用 "5"
        业务接口(含 campaigns/claim/usage) 用 "10"
      campaigns 少带 Cosy-ClientType: 10 时仍返回 200，但 campaigns 数组为空。
-  ⚠️ 业务接口只需最小头集：Accept / Authorization / User-Agent / Cosy-ClientType: 10。
-     不需要 Cosy-Machine* 设备头，exchange 之外也不需要 Cosy-Version。
+  ⚠️ 国际版业务接口还要求设备身份三头（国区不校验，带上无害）：
+       Cosy-MachineToken / Cosy-MachineCode / Cosy-MachineType
+     由本机 Qoder 客户端的 resources/umid/runtime-info 现场生成。缺了它
+     campaigns 依旧 200，但只剩 VIEW_DETAILS 推广——每日 100 的
+     CLAIM_BENEFIT 条目会被静默隐藏，看起来像「活动不存在」。
+  ⚠️ 服务端按设备身份限流：同一台设备每天只允许一个国际版账号领取。
 
-接口清单（全部本机实测）：
+接口清单（两个域名路径一致，全部本机实测）：
   POST /api/v1/jobToken/exchange                  PAT 换 jobToken
   GET  /sash/api/v1/me/campaigns                  活动列表（含每日领 100）
   POST /sash/api/v1/me/campaigns/{campaignId}/claim  领取（body {}，幂等，replayed）
@@ -46,7 +60,10 @@ Qoder CN「每天领 100 Credits」自动签到（青龙面板 / Python3）。
 签到赠送的 100 credits 落在 addOnQuota（资源包），不在 userQuota。
 """
 
+import glob
+import json
 import os
+import subprocess
 import sys
 
 import requests
@@ -56,25 +73,53 @@ import requests
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-API = "https://openapi.qoder.com.cn"
 LOG_PREFIX = "[qoder]"
-TASK_TITLE = "Qoder CN 每日签到"
 USER_AGENT = "Qoder"
 EXCHANGE_CLIENT_TYPE = "5"  # exchange 专用
 OPENAPI_CLIENT_TYPE = "10"  # 业务接口专用（漏了 campaigns 静默为空）
 COSY_VERSION = "1.0.1"  # 仅 exchange 需要
 TIMEOUT = 20
 
+SITES = [
+    {
+        "name": "Qoder",
+        "api": "https://openapi.qoder.sh",
+        "env": "QODER_PAT",
+        "pat_url": "https://qoder.com/account/integrations",
+        "needs_machine_identity": True,
+    },
+    {
+        "name": "Qoder CN",
+        "api": "https://openapi.qoder.com.cn",
+        "env": "QODERCN_PAT",
+        "pat_url": "https://qoder.cn/account/integrations",
+        "needs_machine_identity": False,
+    },
+]
+
 PATH_EXCHANGE = "/api/v1/jobToken/exchange"
 PATH_CAMPAIGNS = "/sash/api/v1/me/campaigns"
 PATH_USAGE = "/sash/api/v2/me/usage"
 
-MSG_AUTH_FAILED = (
-    "❌ Qoder PAT 已失效，请重新登录 qoder.cn/account/integrations "
-    "重新创建并更新 QODERCN_PAT"
+# runtime-info 输出字段 -> 请求头；只有服务端下发每日活动时才校验
+MACHINE_HEADERS = (
+    ("machineToken", "Cosy-MachineToken"),
+    ("machineCode", "Cosy-MachineCode"),
+    ("machineType", "Cosy-MachineType"),
 )
 
+_runtime_info_cache = None
+_runtime_info_loaded = False
+
 __all__ = ["QoderError", "parse_pats", "pick_claimable", "has_claimed_today", "mask"]
+
+
+def auth_failed_message(site):
+    return "❌ %s PAT 已失效，请到 %s 重新创建并更新 %s" % (
+        site["name"],
+        site["pat_url"],
+        site["env"],
+    )
 
 
 class QoderError(Exception):
@@ -153,11 +198,98 @@ def mask(token):
 
 
 # --------------------------------------------------------------------------
+# 设备身份（国际版活动接口的风控前置）
+# --------------------------------------------------------------------------
+
+
+def find_runtime_info():
+    """定位 Qoder 客户端自带的设备身份组件 runtime-info。"""
+    override = os.getenv("QODER_UMID_PATH")
+    if override:
+        return override if os.path.isfile(override) else None
+
+    candidates = []
+    if sys.platform == "win32":
+        for base in (
+            os.path.join(os.getenv("LOCALAPPDATA") or "", "Programs"),
+            os.getenv("PROGRAMFILES") or "",
+            os.getenv("PROGRAMFILES(X86)") or "",
+        ):
+            if not base:
+                continue
+            candidates.append(
+                os.path.join(base, "Qoder", "resources", "umid", "runtime-info.exe")
+            )
+            candidates.append(
+                os.path.join(base, "Qoder CN", "resources", "umid", "runtime-info.exe")
+            )
+        local_programs = os.path.join(os.getenv("LOCALAPPDATA") or "", "Programs")
+        if os.path.isdir(local_programs):
+            # 兜住自定义安装目录（如 Qoder CN 的独立安装）
+            candidates.extend(
+                glob.glob(
+                    os.path.join(
+                        local_programs, "*", "resources", "umid", "runtime-info.exe"
+                    )
+                )
+            )
+    elif sys.platform == "darwin":
+        candidates = [
+            "/Applications/Qoder.app/Contents/Resources/umid/runtime-info",
+            "/Applications/Qoder CN.app/Contents/Resources/umid/runtime-info",
+        ]
+    else:
+        candidates = [
+            "/opt/Qoder/resources/umid/runtime-info",
+            "/usr/share/qoder/resources/umid/runtime-info",
+        ]
+
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def load_machine_identity():
+    """运行 runtime-info，取 Cosy-Machine* 三头；整个进程只跑一次。"""
+    global _runtime_info_cache, _runtime_info_loaded
+    if _runtime_info_loaded:
+        return _runtime_info_cache
+    _runtime_info_loaded = True
+
+    path = find_runtime_info()
+    if not path:
+        return None
+
+    try:
+        output = subprocess.run(
+            [path], capture_output=True, timeout=8, check=True
+        ).stdout
+        doc = json.loads(output.decode("utf-8-sig"))
+    except Exception as exc:
+        log("⚠️ 设备身份组件执行失败（%s）：%s" % (path, exc.__class__.__name__))
+        return None
+
+    headers = {}
+    for key, header in MACHINE_HEADERS:
+        value = doc.get(key) if isinstance(doc, dict) else None
+        if isinstance(value, str) and value:
+            headers[header] = value
+    if not headers:
+        log("⚠️ 设备身份组件未返回有效字段：%s" % path)
+        return None
+
+    _runtime_info_cache = headers
+    log("设备身份已加载（%s）" % path)
+    return headers
+
+
+# --------------------------------------------------------------------------
 # 网络层
 # --------------------------------------------------------------------------
 
 
-def make_session(job_token=None):
+def make_session(job_token=None, machine_headers=None):
     """最小头集。exchange 阶段不挂 Authorization；换到 jt- 后再挂业务头。"""
     session = requests.Session()
     session.headers.update({"Accept": "application/json", "User-Agent": USER_AGENT})
@@ -168,11 +300,14 @@ def make_session(job_token=None):
                 "Cosy-ClientType": OPENAPI_CLIENT_TYPE,
             }
         )
+        if machine_headers:
+            session.headers.update(machine_headers)
     return session
 
 
 def request_json(
     session,
+    site,
     method,
     path,
     payload=None,
@@ -181,7 +316,7 @@ def request_json(
     auth_statuses=(401, 403),
 ):
     """统一请求 + 错误分类：auth_failed / network / schema_changed / api_error。"""
-    url = API + path
+    url = site["api"] + path
     try:
         try:
             resp = session.request(
@@ -200,30 +335,33 @@ def request_json(
     except requests.RequestException as exc:
         raise QoderError(
             "network",
-            "❌ 网络请求失败（连不上 openapi.qoder.com.cn）：%s %s"
-            % (exc.__class__.__name__, where),
+            "❌ 网络请求失败（连不上 %s）：%s %s"
+            % (site["api"].split("//", 1)[-1], exc.__class__.__name__, where),
         )
     if resp.status_code in auth_statuses:
-        raise QoderError("auth_failed", MSG_AUTH_FAILED)
+        raise QoderError("auth_failed", auth_failed_message(site))
     if resp.status_code >= 400:
         # 不回显响应体，避免把服务端的 invalid/expired 之类词带进非凭证类文案
         raise QoderError(
             "api_error",
-            "❌ Qoder 接口返回异常状态 %s（%s）" % (resp.status_code, where),
+            "❌ %s 接口返回异常状态 %s（%s）"
+            % (site["name"], resp.status_code, where),
         )
     try:
         return resp.json()
     except ValueError:
         raise QoderError(
             "schema_changed",
-            "⚠️ Qoder 接口结构未识别（schema_changed）：%s 返回非 JSON 内容" % where,
+            "⚠️ %s 接口结构未识别（schema_changed）：%s 返回非 JSON 内容"
+            % (site["name"], where),
         )
 
 
-def exchange_job_token(session, pat):
+def exchange_job_token(session, site, pat):
     """PAT -> jobToken。响应字段为 snake_case 的 token（不是 accessToken）。"""
     doc = request_json(
         session,
+        site,
         "POST",
         PATH_EXCHANGE,
         payload={"personal_token": pat},
@@ -240,8 +378,8 @@ def exchange_job_token(session, pat):
     if not token or not isinstance(token, str):
         raise QoderError(
             "schema_changed",
-            "⚠️ Qoder 接口结构未识别（schema_changed）：jobToken 响应缺少 token 字段（%s）"
-            % _json_keys_from(doc),
+            "⚠️ %s 接口结构未识别（schema_changed）：jobToken 响应缺少 token 字段（%s）"
+            % (site["name"], _json_keys_from(doc)),
         )
     return token
 
@@ -252,22 +390,23 @@ def _json_keys_from(doc):
     return "响应类型：%s" % type(doc).__name__
 
 
-def fetch_campaigns(session):
-    doc = request_json(session, "GET", PATH_CAMPAIGNS, where="活动列表")
+def fetch_campaigns(session, site):
+    doc = request_json(session, site, "GET", PATH_CAMPAIGNS, where="活动列表")
     if not isinstance(doc, dict) or not isinstance(doc.get("campaigns"), list):
         raise QoderError(
             "schema_changed",
-            "⚠️ Qoder 接口结构未识别（schema_changed）：活动列表缺少 campaigns 字段（%s）"
-            % _json_keys_from(doc),
+            "⚠️ %s 接口结构未识别（schema_changed）：活动列表缺少 campaigns 字段（%s）"
+            % (site["name"], _json_keys_from(doc)),
         )
     return doc
 
 
-def claim(session, campaign_id):
+def claim(session, site, campaign_id):
     """POST /sash/api/v1/me/campaigns/{campaignId}/claim，body 恰好 {}。"""
     path = "%s/%s/claim" % (PATH_CAMPAIGNS, campaign_id)
     doc = request_json(
         session,
+        site,
         "POST",
         path,
         payload={},
@@ -277,19 +416,19 @@ def claim(session, campaign_id):
     if not isinstance(doc, dict) or not doc.get("grantId"):
         raise QoderError(
             "schema_changed",
-            "⚠️ Qoder 接口结构未识别（schema_changed）：领取响应缺少 grantId（%s）"
-            % _json_keys_from(doc),
+            "⚠️ %s 接口结构未识别（schema_changed）：领取响应缺少 grantId（%s）"
+            % (site["name"], _json_keys_from(doc)),
         )
     return doc
 
 
-def fetch_usage(session):
-    doc = request_json(session, "GET", PATH_USAGE, where="余额查询")
+def fetch_usage(session, site):
+    doc = request_json(session, site, "GET", PATH_USAGE, where="余额查询")
     if not isinstance(doc, dict) or not isinstance(doc.get("qoderUsage"), dict):
         raise QoderError(
             "schema_changed",
-            "⚠️ Qoder 接口结构未识别（schema_changed）：余额响应缺少 qoderUsage（%s）"
-            % _json_keys_from(doc),
+            "⚠️ %s 接口结构未识别（schema_changed）：余额响应缺少 qoderUsage（%s）"
+            % (site["name"], _json_keys_from(doc)),
         )
     return doc
 
@@ -336,19 +475,26 @@ def _claim_amount(doc, campaign):
 # --------------------------------------------------------------------------
 
 
-def run_account(pat, index):
+def run_account(site, pat, index, machine_headers=None):
     """跑单个账号，内部捕获所有异常，绝不向调用方抛出。"""
     name = mask(pat)
-    tag = "账号%d(%s)" % (index, name)
-    result = {"name": name, "ok": False, "message": "❌ 签到失败", "balance": None}
+    tag = "%s 账号%d(%s)" % (site["name"], index, name)
+    result = {
+        "site": site["name"],
+        "label": tag,
+        "name": name,
+        "ok": False,
+        "message": "❌ 签到失败",
+        "balance": None,
+    }
 
     try:
         session = make_session()
-        job_token = exchange_job_token(session, pat)
+        job_token = exchange_job_token(session, site, pat)
         log("%s jobToken 交换成功（有效期 24h）" % tag)
 
-        session = make_session(job_token)
-        doc = fetch_campaigns(session)
+        session = make_session(job_token, machine_headers)
+        doc = fetch_campaigns(session, site)
         campaigns = doc.get("campaigns") or []
         claimable = pick_claimable(campaigns)
         log("%s 活动列表：共 %d 条，可领 %d 条" % (tag, len(campaigns), len(claimable)))
@@ -357,7 +503,7 @@ def run_account(pat, index):
             granted = 0
             replayed = False
             for campaign in claimable:
-                res = claim(session, campaign["campaignId"])
+                res = claim(session, site, campaign["campaignId"])
                 if res.get("replayed"):
                     replayed = True
                 granted += _claim_amount(res, campaign)
@@ -369,15 +515,22 @@ def run_account(pat, index):
         elif has_claimed_today(campaigns):
             message = "✅ 今天已签到（无需操作）"
             log("%s %s" % (tag, message))
+        elif site.get("needs_machine_identity") and not machine_headers:
+            message = (
+                "❌ 无法确认签到状态：未找到 Qoder 客户端的设备身份组件 runtime-info，"
+                "国际版每日活动只在携带设备身份时下发；请在本机安装并登录 Qoder 桌面端，"
+                "或用 QODER_UMID_PATH 指定 runtime-info 路径"
+            )
+            log("%s %s" % (tag, message))
         else:
             message = "⚠️ 当前没有进行中的签到活动（活动可能已下线）"
             log("%s %s" % (tag, message))
 
-        result["ok"] = True
+        result["ok"] = not message.startswith("❌")
         result["message"] = message
 
         try:
-            balance = format_balance(fetch_usage(session))
+            balance = format_balance(fetch_usage(session, site))
         except QoderError as exc:
             balance = "余额查询失败：%s" % exc.message
             # 余额查询失败本身不影响已完成的签到，但**凭证类**失败必须让账号判失败。
@@ -405,12 +558,18 @@ def run_account(pat, index):
 
 def build_notification(results):
     ok_count = sum(1 for item in results if item.get("ok"))
-    lines = ["%s：成功 %d / 共 %d" % (TASK_TITLE, ok_count, len(results)), ""]
+    site_names = []
     for item in results:
-        lines.append("【%s】%s" % (item.get("name"), item.get("message")))
+        name = item.get("site") or "Qoder"
+        if name not in site_names:
+            site_names.append(name)
+    title = "%s 每日签到" % " / ".join(site_names)
+    lines = ["%s：成功 %d / 共 %d" % (title, ok_count, len(results)), ""]
+    for item in results:
+        lines.append("【%s】%s" % (item.get("label") or item.get("name"), item.get("message")))
         if item.get("balance"):
             lines.append("    %s" % item["balance"])
-    return TASK_TITLE, "\n".join(lines)
+    return title, "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -472,21 +631,40 @@ def send_notification(title, content):
 
 
 def main():
-    pats = parse_pats(os.getenv("QODERCN_PAT"))
-    if not pats:
+    configured = []
+    for site in SITES:
+        pats = parse_pats(os.getenv(site["env"]))
+        if pats:
+            configured.append((site, pats))
+        else:
+            log("未配置 %s，跳过 %s" % (site["env"], site["name"]))
+
+    if not configured:
         message = (
-            "❌ 未配置环境变量 QODERCN_PAT\n"
-            "请到 https://qoder.cn/account/integrations 创建个人访问令牌（PAT，pt- 开头），\n"
-            "然后在青龙面板的「环境变量」中添加：\n"
-            "  QODERCN_PAT=pt-你的令牌\n"
-            "多账号用 & 或换行分隔，例如：QODERCN_PAT=pt-账号1&pt-账号2"
+            "❌ 未配置任何 Qoder PAT\n"
+            "国际版：到 https://qoder.com/account/integrations 创建 PAT，"
+            "然后在青龙面板的「环境变量」中添加 QODER_PAT=pt-你的令牌\n"
+            "Qoder CN：到 https://qoder.cn/account/integrations 创建 PAT，"
+            "添加 QODERCN_PAT=pt-你的令牌\n"
+            "两套账号相互独立，可只配其中一个；多账号用 & 或换行分隔，"
+            "例如 QODER_PAT=pt-账号1&pt-账号2"
         )
         log(message)
-        send_notification(TASK_TITLE, message)
+        send_notification("Qoder 每日签到", message)
         return 1
 
-    log("开始签到：共 %d 个账号" % len(pats))
-    results = [run_account(pat, index) for index, pat in enumerate(pats, 1)]
+    account_count = sum(len(pats) for _, pats in configured)
+    log("开始签到：共 %d 个站点 / %d 个账号" % (len(configured), account_count))
+
+    needs_identity = any(site.get("needs_machine_identity") for site, _ in configured)
+    machine_headers = load_machine_identity() if needs_identity else None
+    if needs_identity and not machine_headers:
+        log("⚠️ 未找到设备身份组件 runtime-info，国际版可能拿不到每日签到活动")
+
+    results = []
+    for site, pats in configured:
+        for index, pat in enumerate(pats, 1):
+            results.append(run_account(site, pat, index, machine_headers))
 
     title, content = build_notification(results)
     send_notification(title, content)
@@ -500,5 +678,5 @@ if __name__ == "__main__":
     except Exception as exc:
         fallback = "❌ 发生异常:执行失败\n\n%s: %s" % (exc.__class__.__name__, exc)
         log(fallback)
-        send_notification(TASK_TITLE, fallback)
+        send_notification("Qoder 每日签到", fallback)
         sys.exit(1)
