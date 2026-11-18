@@ -39,6 +39,8 @@ jobs:
           QODER_MACHINE_JSON: ${{ secrets.QODER_MACHINE_JSON }}
           TRAE_STORAGE_B64: ${{ secrets.TRAE_STORAGE_B64 }}
           WORKBUDDY_AUTH_B64: ${{ secrets.WORKBUDDY_AUTH_B64 }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
 
   keepalive:
     name: 每月空提交保活

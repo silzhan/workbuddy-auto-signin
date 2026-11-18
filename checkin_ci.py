@@ -12,10 +12,16 @@
 退出码：全部成功（或未配置而跳过）0，任一失败 1。
 """
 import base64
+import contextlib
+import hashlib
+import hmac
+import io
 import json
 import os
 import sys
 import tempfile
+import time
+import urllib.request
 from datetime import datetime
 
 # Windows 控制台默认 GBK，中文日志会花屏；Actions/Unix 环境本就是 UTF-8
@@ -167,12 +173,129 @@ def run_workbuddy():
         sys.argv = original
 
 
+class _Tee:
+    """回显到真实 stdout 的同时捕获一份，供通知摘要使用。"""
+
+    def __init__(self, stream, buffer):
+        self._stream = stream
+        self._buffer = buffer
+
+    def write(self, text):
+        self._buffer.write(text)
+        return self._stream.write(text)
+
+    def flush(self):
+        self._buffer.flush()
+        self._stream.flush()
+
+
+def _digest(output):
+    """从签到日志里挑出结论行（成功/失败/余额/错误）。"""
+    keywords = ("✅", "❌", "⚠️", "余额", "签到不可用", "ERROR")
+    lines = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line and any(keyword in line for keyword in keywords):
+            lines.append(line)
+    return lines[:20]
+
+
+def _run(name, func):
+    """跑单个入口，返回 (状态, 结论行)；状态 None 表示跳过。"""
+    stream = sys.stdout
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(_Tee(stream, buffer)):
+            code = func()
+    except Exception as exc:
+        log("[ci] ERROR: %s 执行异常：%s: %s" % (name, exc.__class__.__name__, exc))
+        return False, _digest(buffer.getvalue())
+    state = None if code is None else code == 0
+    return state, _digest(buffer.getvalue())
+
+
+# --------------------------------------------------------------------------
+# 飞书通知（自定义机器人，支持加签；与 GLaDOS-Auto-Checkin 一致）
+# --------------------------------------------------------------------------
+
+
+def feishu_payload(title, content, secret="", timestamp=None, template="blue"):
+    """构造飞书 interactive 卡片；secret 非空时按官方算法加签。"""
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": template,
+            },
+            "elements": [{"tag": "markdown", "content": content}],
+        },
+    }
+    if secret:
+        timestamp = str(timestamp if timestamp is not None else int(time.time()))
+        string_to_sign = "%s\n%s" % (timestamp, secret)
+        digest = hmac.new(
+            string_to_sign.encode("utf-8"), b"", hashlib.sha256
+        ).digest()
+        payload["timestamp"] = timestamp
+        payload["sign"] = base64.b64encode(digest).decode("utf-8")
+    return payload
+
+
+def push_feishu(title, content, failed=False):
+    webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
+    if not webhook:
+        log("[ci] 未配置 FEISHU_WEBHOOK，跳过飞书通知")
+        return False
+    if not webhook.startswith(("https://", "http://")):
+        log("[ci] ⚠️ FEISHU_WEBHOOK 不是 http(s) 地址，跳过飞书通知")
+        return False
+
+    payload = feishu_payload(
+        title,
+        content,
+        os.environ.get("FEISHU_SECRET", "").strip(),
+        template="red" if failed else "blue",
+    )
+    request = urllib.request.Request(
+        webhook,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = json.loads(response.read().decode("utf-8", "replace"))
+    except Exception as exc:
+        log("[ci] ⚠️ 飞书通知发送失败：%s: %s" % (exc.__class__.__name__, exc))
+        return False
+
+    code = body.get("code", body.get("StatusCode"))
+    if code == 0:
+        log("[ci] 飞书通知已发送")
+        return True
+    log("[ci] ⚠️ 飞书通知被拒绝：%s"
+        % (body.get("msg") or body.get("StatusMessage") or body))
+    return False
+
+
+def _notify_content(rows, elapsed):
+    icons = {True: "✅", False: "❌", None: "⏭"}
+    lines = []
+    for name, state, digest in rows:
+        lines.append("**%s** %s" % (name, icons[state]))
+        lines.extend(digest)
+    lines.append("")
+    lines.append("用时 %.0fs" % elapsed)
+    return "\n".join(lines)[:3500]
+
+
 def write_summary(rows):
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
     lines = ["## 签到结果", "", "| 入口 | 结果 |", "|---|---|"]
-    for name, ok in rows:
+    for name, ok, _ in rows:
         result = "✅ 成功" if ok else ("⏭ 跳过" if ok is None else "❌ 失败")
         lines.append("| %s | %s |" % (name, result))
     try:
@@ -182,34 +305,32 @@ def write_summary(rows):
         log("[ci] ⚠️ 写入 Step Summary 失败：%s" % exc.__class__.__name__)
 
 
-def _run(name, func):
-    try:
-        code = func()
-    except Exception as exc:
-        log("[ci] ERROR: %s 执行异常：%s: %s" % (name, exc.__class__.__name__, exc))
-        return False
-    return None if code is None else code == 0
-
-
 def main():
     started = datetime.now()
     log("[%s] [ci] 开始签到：Qoder / Qoder CN / Trae CN / WorkBuddy"
         % started.strftime("%Y-%m-%d %H:%M:%S"))
 
     rows = [
-        ("Qoder / Qoder CN", _run("Qoder", run_qoder)),
-        ("Trae CN", _run("Trae CN", run_trae)),
-        ("WorkBuddy", _run("WorkBuddy", run_workbuddy)),
+        ("Qoder / Qoder CN", *_run("Qoder", run_qoder)),
+        ("Trae CN", *_run("Trae CN", run_trae)),
+        ("WorkBuddy", *_run("WorkBuddy", run_workbuddy)),
     ]
+    elapsed = (datetime.now() - started).total_seconds()
 
     write_summary(rows)
     print()
     log("[ci] 汇总：")
-    for name, ok in rows:
-        log("  %s %s" % ("✅" if ok else ("⏭" if ok is None else "❌"), name))
-    elapsed = (datetime.now() - started).total_seconds()
+    for name, state, _ in rows:
+        log("  %s %s" % ("✅" if state else ("⏭" if state is None else "❌"), name))
     log("[ci] 用时 %.0fs" % elapsed)
-    return 0 if all(ok is not False for _, ok in rows) else 1
+
+    failed = any(state is False for _, state, _ in rows)
+    push_feishu(
+        "签到结果 %s" % started.strftime("%Y-%m-%d"),
+        _notify_content(rows, elapsed),
+        failed=failed,
+    )
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

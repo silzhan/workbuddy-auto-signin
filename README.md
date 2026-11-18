@@ -280,6 +280,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/workbuddy-auto-signin.pl
 | `QODER_MACHINE_JSON` | 本机 Qoder 的 `runtime-info` 输出（裸 JSON 或 base64 均可） |
 | `TRAE_STORAGE_B64` | 本机 Trae CN `storage.json` 的 base64 |
 | `WORKBUDDY_AUTH_B64` | 本机 WorkBuddy `workbuddy-desktop.info` 的 base64（未配置则跳过） |
+| `FEISHU_WEBHOOK` | 可选。飞书自定义机器人 Webhook，配置后推送签到卡片 |
+| `FEISHU_SECRET` | 可选。机器人启用「签名校验」时填密钥 |
 
 Windows PowerShell 导出命令：
 
@@ -299,6 +301,12 @@ Windows PowerShell 导出命令：
 > - **WorkBuddy** 的 access token 约 28 天过期，`signin.py` 不会用 refresh token 续期；到期前重新登录桌面端并更新 `WORKBUDDY_AUTH_B64`。
 > - **Qoder** 的设备身份属于单设备限流维度，密钥变动或签到异常时重新导出 `QODER_MACHINE_JSON`。
 > - Secret 更新后无需改代码，下一次定时即可生效。
+
+### 飞书通知（可选）
+
+1. 飞书群 → **设置 → 群机器人 → 添加机器人 → 自定义机器人**，复制 Webhook 地址
+2. 在仓库 Secrets 添加 `FEISHU_WEBHOOK`；若机器人开启「签名校验」，再添加 `FEISHU_SECRET`（签名算法与 GLaDOS-Auto-Checkin 一致：`HMAC-SHA256(key="timestamp\nsecret", msg="")`，Base64 后随请求发送）
+3. 每次运行后推送一张卡片：各入口状态 + 结论行（余额 / 错误）；存在失败时卡片头部变红，通知发送失败不影响签到本身的退出码
 
 ---
 
