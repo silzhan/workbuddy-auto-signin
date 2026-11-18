@@ -67,6 +67,28 @@ class TraeStorageTests(unittest.TestCase):
             checkin_ci.materialize_trae_storage(base64.b64encode(b"nope").decode())
 
 
+class WorkBuddyAuthTests(unittest.TestCase):
+    def test_materialize_writes_auth_file(self):
+        payload = {"auth": {"accessToken": "synthetic"}, "account": {}}
+        raw = base64.b64encode(json.dumps(payload).encode()).decode()
+        path = checkin_ci.materialize_workbuddy_auth(raw)
+        self.addCleanup(lambda: __import__("shutil").rmtree(
+            os.path.dirname(path), ignore_errors=True))
+        self.assertTrue(os.path.isfile(path))
+        with open(path, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), payload)
+
+    def test_materialize_rejects_bad_input(self):
+        with self.assertRaises(ValueError):
+            checkin_ci.materialize_workbuddy_auth("")
+        with self.assertRaises(ValueError):
+            checkin_ci.materialize_workbuddy_auth(base64.b64encode(b"nope").decode())
+
+    def test_missing_secret_skips_instead_of_failing(self):
+        os.environ.pop("WORKBUDDY_AUTH_B64", None)
+        self.assertIsNone(checkin_ci.run_workbuddy())
+
+
 class SummaryTests(unittest.TestCase):
     def test_writes_markdown_when_env_set(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -82,6 +104,15 @@ class SummaryTests(unittest.TestCase):
     def test_noop_without_env(self):
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
         checkin_ci.write_summary([("X", True)])  # 不应抛异常
+
+    def test_skip_renders_skip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "summary.md")
+            os.environ["GITHUB_STEP_SUMMARY"] = path
+            self.addCleanup(os.environ.pop, "GITHUB_STEP_SUMMARY", None)
+            checkin_ci.write_summary([("WorkBuddy", None)])
+            with open(path, "r", encoding="utf-8") as f:
+                self.assertIn("| WorkBuddy | ⏭ 跳过 |", f.read())
 
 
 if __name__ == "__main__":

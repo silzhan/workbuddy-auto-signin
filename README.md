@@ -259,12 +259,13 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/workbuddy-auto-signin.pl
 
 ---
 
-## ☁️ GitHub Actions 部署（Qoder / Trae）
+## ☁️ GitHub Actions 部署（Qoder / Trae / WorkBuddy）
 
-`checkin_ci.py` 是 CI 专用入口，适合把 **Qoder 国际版 / Qoder CN / Trae CN** 放到 GitHub Actions 跑（WorkBuddy 仍依赖本机桌面端登录态，建议留在本机）。它不会读取本机安装目录，也不改动本机脚本：
+`checkin_ci.py` 是 CI 专用入口，适合把 **Qoder 国际版 / Qoder CN / Trae CN / WorkBuddy** 放到 GitHub Actions 跑。它不会读取本机安装目录，也不改动本机脚本：
 
 - Qoder 设备身份：从 `QODER_MACHINE_JSON` 注入（国际版活动接口的风控前置）
 - Trae 登录态：从 `TRAE_STORAGE_B64` 还原到临时 `APPDATA`
+- WorkBuddy 登录态：从 `WORKBUDDY_AUTH_B64` 还原到临时凭据文件
 
 工作流文件：`.github/workflows/checkin.yml`，每天两次定时（北京时间 10:05 与 22:05，第二次用于兜底重试），也支持在 Actions 页面手动触发；每月 1 日自动空提交保活，避免公开仓库 60 天无活动被停用定时任务。
 
@@ -278,6 +279,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/workbuddy-auto-signin.pl
 | `QODERCN_PAT` | https://qoder.cn/account/integrations 创建 PAT |
 | `QODER_MACHINE_JSON` | 本机 Qoder 的 `runtime-info` 输出（裸 JSON 或 base64 均可） |
 | `TRAE_STORAGE_B64` | 本机 Trae CN `storage.json` 的 base64 |
+| `WORKBUDDY_AUTH_B64` | 本机 WorkBuddy `workbuddy-desktop.info` 的 base64（未配置则跳过） |
 
 Windows PowerShell 导出命令：
 
@@ -287,10 +289,14 @@ Windows PowerShell 导出命令：
 
 # Trae 登录态
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:APPDATA\Trae CN\User\globalStorage\storage.json"))
+
+# WorkBuddy 登录态
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:LOCALAPPDATA\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info"))
 ```
 
 > [!IMPORTANT]
 > - **Trae** 的 access token 约 2 周过期（refresh token 脚本未使用），过期后会返回 `code 1001`，重新登录 Trae CN 后再导出一次 Secret 即可。
+> - **WorkBuddy** 的 access token 约 28 天过期，`signin.py` 不会用 refresh token 续期；到期前重新登录桌面端并更新 `WORKBUDDY_AUTH_B64`。
 > - **Qoder** 的设备身份属于单设备限流维度，密钥变动或签到异常时重新导出 `QODER_MACHINE_JSON`。
 > - Secret 更新后无需改代码，下一次定时即可生效。
 
