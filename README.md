@@ -259,6 +259,43 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/workbuddy-auto-signin.pl
 
 ---
 
+## ☁️ GitHub Actions 部署（Qoder / Trae）
+
+`checkin_ci.py` 是 CI 专用入口，适合把 **Qoder 国际版 / Qoder CN / Trae CN** 放到 GitHub Actions 跑（WorkBuddy 仍依赖本机桌面端登录态，建议留在本机）。它不会读取本机安装目录，也不改动本机脚本：
+
+- Qoder 设备身份：从 `QODER_MACHINE_JSON` 注入（国际版活动接口的风控前置）
+- Trae 登录态：从 `TRAE_STORAGE_B64` 还原到临时 `APPDATA`
+
+工作流文件：`.github/workflows/checkin.yml`，每天两次定时（北京时间 10:05 与 22:05，第二次用于兜底重试），也支持在 Actions 页面手动触发；每月 1 日自动空提交保活，避免公开仓库 60 天无活动被停用定时任务。
+
+### 配置 Secrets
+
+到仓库 **Settings → Secrets and variables → Actions** 添加：
+
+| Secret | 说明 |
+|---|---|
+| `QODER_PAT` | https://qoder.com/account/integrations 创建 PAT；多账号用 `&` 分隔 |
+| `QODERCN_PAT` | https://qoder.cn/account/integrations 创建 PAT |
+| `QODER_MACHINE_JSON` | 本机 Qoder 的 `runtime-info` 输出（裸 JSON 或 base64 均可） |
+| `TRAE_STORAGE_B64` | 本机 Trae CN `storage.json` 的 base64 |
+
+Windows PowerShell 导出命令：
+
+```powershell
+# Qoder 设备身份（把输出整段存入 QODER_MACHINE_JSON）
+& "$env:LOCALAPPDATA\Programs\Qoder\resources\umid\runtime-info.exe"
+
+# Trae 登录态
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:APPDATA\Trae CN\User\globalStorage\storage.json"))
+```
+
+> [!IMPORTANT]
+> - **Trae** 的 access token 约 2 周过期（refresh token 脚本未使用），过期后会返回 `code 1001`，重新登录 Trae CN 后再导出一次 Secret 即可。
+> - **Qoder** 的设备身份属于单设备限流维度，密钥变动或签到异常时重新导出 `QODER_MACHINE_JSON`。
+> - Secret 更新后无需改代码，下一次定时即可生效。
+
+---
+
 ## 🛠️ 手动运行（调试用）
 
 想先手动跑一次、确认脚本可用：
