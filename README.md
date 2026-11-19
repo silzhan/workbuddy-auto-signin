@@ -279,6 +279,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/workbuddy-auto-signin.pl
 | `QODERCN_PAT` | https://qoder.cn/account/integrations 创建 PAT |
 | `QODER_MACHINE_JSON` | 本机 Qoder 的 `runtime-info` 输出（裸 JSON 或 base64 均可） |
 | `TRAE_STORAGE_B64` | 本机 Trae CN `storage.json` 的 base64 |
+| `TRAE_DEVICE_ID` | 本机 Trae CN 设备 ID（`tt_net_config.config` 中的 `device_id`）；缺失时 `/claim` 会被风控拒绝 |
 | `WORKBUDDY_AUTH_B64` | 本机 WorkBuddy `workbuddy-desktop.info` 的 base64（未配置则跳过） |
 | `FEISHU_WEBHOOK` | 可选。飞书自定义机器人 Webhook，配置后推送签到卡片 |
 | `FEISHU_SECRET` | 可选。机器人启用「签名校验」时填密钥 |
@@ -292,12 +293,16 @@ Windows PowerShell 导出命令：
 # Trae 登录态
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:APPDATA\Trae CN\User\globalStorage\storage.json"))
 
+# Trae 设备 ID（把数字存入 TRAE_DEVICE_ID）
+(Select-String -Path "$env:APPDATA\Trae CN\ahanet\tt_net_config.config" -Pattern 'device_id[^\d]*(\d+)').Matches[0].Groups[1].Value
+
 # WorkBuddy 登录态
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:LOCALAPPDATA\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info"))
 ```
 
 > [!IMPORTANT]
 > - **Trae** 的 access token 约 2 周过期（refresh token 脚本未使用），过期后会返回 `code 1001`，重新登录 Trae CN 后再导出一次 Secret 即可。
+> - **Trae** 的设备 ID 属于下单风控维度，CI 里无法从临时目录自动读取，必须配置 `TRAE_DEVICE_ID`，否则签到接口报 `The submitted order parameters are incorrect`。
 > - **WorkBuddy** 的 access token 约 28 天过期，`signin.py` 不会用 refresh token 续期；到期前重新登录桌面端并更新 `WORKBUDDY_AUTH_B64`。
 > - **Qoder** 的设备身份属于单设备限流维度，密钥变动或签到异常时重新导出 `QODER_MACHINE_JSON`。
 > - Secret 更新后无需改代码，下一次定时即可生效。

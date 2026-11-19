@@ -67,6 +67,26 @@ class TraeStorageTests(unittest.TestCase):
             checkin_ci.materialize_trae_storage(base64.b64encode(b"nope").decode())
 
 
+class TraeDeviceIdTests(unittest.TestCase):
+    def test_env_var_takes_priority(self):
+        os.environ["TRAE_DEVICE_ID"] = "123456789"
+        self.addCleanup(os.environ.pop, "TRAE_DEVICE_ID", None)
+        import trae_checkin
+
+        self.assertEqual(trae_checkin.load_device_id(), "123456789")
+
+    def test_blank_env_var_falls_through(self):
+        os.environ["TRAE_DEVICE_ID"] = "  "
+        self.addCleanup(os.environ.pop, "TRAE_DEVICE_ID", None)
+        os.environ["APPDATA"] = tempfile.mkdtemp(prefix="trae-empty-appdata-")
+        self.addCleanup(
+            lambda: __import__("shutil").rmtree(
+                os.environ["APPDATA"], ignore_errors=True))
+        import trae_checkin
+
+        self.assertEqual(trae_checkin.load_device_id(), "")
+
+
 class WorkBuddyAuthTests(unittest.TestCase):
     def test_materialize_writes_auth_file(self):
         payload = {"auth": {"accessToken": "synthetic"}, "account": {}}

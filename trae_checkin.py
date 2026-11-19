@@ -128,7 +128,12 @@ def load_accounts() -> list:
 
 
 def load_device_id() -> str:
-    """设备 ID：ahanet 配置 → 客户端日志 → 兜底常量"""
+    """设备 ID：环境变量 → ahanet 配置 → 客户端日志 → 兜底常量"""
+    # CI 还原的临时 APPDATA 没有 ahanet/日志，claim 接口的设备风控
+    # 要求有效 device_id，缺失时返回「order parameters incorrect」
+    env_id = os.environ.get("TRAE_DEVICE_ID", "").strip()
+    if env_id:
+        return env_id
     dirs = [d for _, _, d in scan_targets()]
     for d in dirs:
         p = d / "ahanet" / "tt_net_config.config"
